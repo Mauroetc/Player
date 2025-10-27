@@ -1,5 +1,6 @@
 
 /*start of file .\beloved_bad_commits.txt*/
+// beloved_bad_commit LISTS ALL THE CHANGES PROPOSED BY THE PROBLEMATIC BELOVED RAPTURE COMMIDS
 
 <commit>
 <details>
@@ -1496,6 +1497,8 @@ Game_Interpreter_Battle::Game_Interpreter_Battle()
 
 
 /*end of file .\beloved_bad_commits.txt*/
+
+// THE REST OF FILES BELLOW REPRESENTS CURRENT CODEBASE, THOSE DON'T HAVE BELOVED RAPTURE CHANGES , THEY USE CONVENTIONS AND CHOICES APPROPRIATE FOR EASYRPG CHOICES.
 
 /*start of file .\algo.cpp*/
 
