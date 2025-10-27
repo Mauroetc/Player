@@ -1,3 +1,1502 @@
+
+/*start of file .\beloved_bad_commits.txt*/
+
+<commit>
+<details>
+Battle Commands from Maniacs - 3yr ago
+Description:
+/!\ This branch is not intended to be an exact replica of Maniacs' effects, but to enable the use of similar commands, so a project made under Maniacs is likely to have bugs. /!\
+
+Common Event can run in Battle ( Begin Battle and Parallel Battle )
+
+Should be okay :
+- Command Control Battle
+- Command Control ATB Gauge
+- Command Battle Command EX
+- Command Get battle Info
+</details>
+<diff>
+--- CMakeLists.txt ---
+@@ -174,6 +174,8 @@ add_library(${PROJECT_NAME} OBJECT
+	src/game_interpreter_map.h
+	src/game_map.cpp
+	src/game_map.h
++	src/game_maniacs.cpp
++	src/game_maniacs.h
+	src/game_message.cpp
+	src/game_message.h
+	src/game_party_base.cpp
+
+--- src\game_battle.cpp ---
+@@ -36,6 +36,8 @@
+#include "output.h"
+#include "utils.h"
+#include "rand.h"
++#include "game_map.h"
++#include <game_maniacs.h>
+
+namespace Game_Battle {
+ const lcf::rpg::Troop* troop = nullptr;
+@@ -218,6 +220,31 @@ void Game_Battle::UpdateAtbGauges() {
+ const auto cur_atb = bat->GetAtbGauge();
+ const auto multiplier = std::max(1.0, static_cast<double>(275000 - cur_atb) / 55000.0);
+ increment = Utils::RoundTo<int>(multiplier * increment);
++ int CE_ID = ManiacsBattle::Get_ATBCE();
++ int Var_ID = ManiacsBattle::Get_ATBVar();
++ if (CE_ID > 0) {
++ if (bat->GetType() == Game_Battler::Type_Enemy) {
++
++ Main_Data::game_variables->Set(Var_ID, 1);
++ auto* enemy = static_cast<Game_Enemy*>(bat);
++ Main_Data::game_variables->Set(Var_ID + 1, enemy->GetTroopMemberId() - 1);
++
++					}
++ else {
++ Main_Data::game_variables->Set(Var_ID, 0);
++ Main_Data::game_variables->Set(Var_ID + 1, Main_Data::game_party->GetActorPositionInParty(bat->GetId()));
++					}
++
++ Main_Data::game_variables->Set(Var_ID + 2, cur_atb);
++ Main_Data::game_variables->Set(Var_ID + 3, increment);
+
+--- src\game_battle.h ---
+@@ -25,6 +25,7 @@
+#include "teleport_target.h"
+#include "utils.h"
+#include "point.h"
++#include "game_commonevent.h"
+
+class Game_Battler;
+class Game_Enemy;
+@@ -197,6 +198,12 @@ namespace Game_Battle {
+
+ /** Don't reference this, use IsBattleRunning()! */
+ extern bool battle_running;
++
++ /**
++ * Common Event in Battle
++ */
++ void StartCommonEvent(int i);
++ Game_CommonEvent* StartCommonEventID(int id);
+}
+
+inline bool Game_Battle::IsBattleRunning() {
+
+--- src\game_battlealgorithm.cpp ---
+@@ -50,6 +50,8 @@
+#include "attribute.h"
+#include "spriteset_battle.h"
+#include "feature.h"
++#include <game_maniacs.h>
++#include <game_variables.h>
+
+static inline int MaxDamageValue() {
+ return lcf::Data::system.easyrpg_max_damage == -1 ? (Player::IsRPG2k() ? 999 : 9999) : lcf::Data::system.easyrpg_max_damage;
+@@ -373,6 +375,122 @@ void Game_BattleAlgorithm::AlgorithmBase::Start() {
+ assert(current_target == targets.end() || IsCurrentTargetValid());
+
+ source->SetCharged(false);
++
++ int CE_ID = ManiacsBattle::Get_TargetCE();
++ int Var_ID = ManiacsBattle::Get_TargetVar();
++ if (CE_ID > 0) {
++ Main_Data::game_variables->Set(Var_ID + 1, 123);
++
++ Main_Data::game_variables->Set(Var_ID + 5, 123);
++
+
+--- src\game_battler.cpp ---
+@@ -43,6 +43,8 @@
+#include "attribute.h"
+#include "algo.h"
+#include "rand.h"
++#include <game_maniacs.h>
++#include <game_variables.h>
+
+Game_Battler::Game_Battler() {
+}
+@@ -332,6 +334,31 @@ bool Game_Battler::AddState(int state_id, bool allow_battle_states) {
+ return was_added;
+	}
+
++ int CE_ID = ManiacsBattle::Get_StateCE();
++ int Var_ID = ManiacsBattle::Get_StateVar();
++ if (CE_ID > 0) {
++ int index = 0;
++ if (GetType() == Game_Battler::Type_Ally) {
++ Main_Data::game_variables->Set(Var_ID, 0);
++ index = Main_Data::game_party->GetActorPositionInParty(GetId());
++		}
++ else {
++ Main_Data::game_variables->Set(Var_ID, 1);
++ Game_Enemy* e = (Game_Enemy*)this;
++ index = Main_Data::game_enemyparty->GetEnemyPositionInParty(e);
+
+--- src\game_commonevent.cpp ---
+@@ -23,6 +23,8 @@
+#include "main_data.h"
+#include <lcf/reader_util.h>
+#include <cassert>
++#include <game_maniacs.h>
++#include <output.h>
+
+Game_CommonEvent::Game_CommonEvent(int common_event_id) :
+ common_event_id(common_event_id)
+@@ -38,6 +40,18 @@ Game_CommonEvent::Game_CommonEvent(int common_event_id) :
+
+}
+
++void Game_CommonEvent::ForceCreate(int ce_ID) {
++ auto* ce = lcf::ReaderUtil::GetElement(lcf::Data::commonevents, ce_ID);
++
++ if ((ce->trigger == lcf::rpg::EventPage::Trigger_parallel || ce->ID == ManiacsBattle::Get_ATBCE() || ce->ID == ManiacsBattle::Get_TargetCE() ||
++ ce->ID == ManiacsBattle::Get_DamageCE() || ce->ID == ManiacsBattle::Get_StateCE() || ce->ID == ManiacsBattle::Get_StatsCE())
++ && !ce->event_commands.empty())
++	{
++ interpreter.reset(new Game_Interpreter_Map());
+
+--- src\game_commonevent.h ---
+@@ -54,6 +54,8 @@ public:
+ */
+ AsyncOp Update(bool resume_async);
+
++ AsyncOp Game_CommonEvent::UpdateBattle(bool resume_async, int ce_ID);
++
+ /**
+ * Gets common event index.
+ *
+@@ -107,6 +109,13 @@ public:
+ */
+ bool IsWaitingBackgroundExecution(bool force_run) const;
+
++ /**
++ * Force creation of Common Event
++ *
++ * @param ce_ID Common Event ID
++ */
++ void ForceCreate(int ce_ID);
++
+private:
+ int common_event_id;
+
+
+--- src\game_interpreter_battle.cpp ---
+@@ -30,6 +30,8 @@
+#include "game_map.h"
+#include "spriteset_battle.h"
+#include <cassert>
++#include <scene_battle.h>
++#include <game_maniacs.h>
+
+enum BranchBattleSubcommand {
+ eOptionBranchBattleElse = 1
+@@ -538,39 +540,420 @@ bool Game_Interpreter_Battle::CommandEndBranchBattle(lcf::rpg::EventCommand cons
+ return true;
+}
+
+-bool Game_Interpreter_Battle::CommandManiacControlBattle(lcf::rpg::EventCommand const&) {
++bool Game_Interpreter_Battle::CommandManiacControlBattle(lcf::rpg::EventCommand const& com) {
+ if (!Player::IsPatchManiac()) {
+ return true;
+	}
++ if (com.parameters[0] == 0) {
++ // Target
+
+- Output::Warning("Maniac Patch: Command ControlBattle not supported");
++ ManiacsBattle::Set_ATBCE(com.parameters[2]);
++ ManiacsBattle::Set_ATBVar(com.parameters[3]);
+
+--- src\game_interpreter_battle.h ---
+@@ -58,6 +58,10 @@ public:
+ bool IsForceFleeEnabled() const;
+
+ bool ExecuteCommand() override;
++
++ Game_CommonEvent* StartCommonEvent(int i);
++ void PushCommonEvent(Game_CommonEvent* ev);
++
+private:
+ bool CommandCallCommonEvent(lcf::rpg::EventCommand const& com);
+ bool CommandForceFlee(lcf::rpg::EventCommand const& com);
+
+--- src\game_maniacs.cpp ---
+@@ -0,0 +1,106 @@
++#include "game_maniacs.h"
++
++namespace ManiacsBattle
++{
++ int damage_CE;
++ int damage_Var;
++
++ void Set_DamageCE(int i) {
++ damage_CE = i;
++	}
++ int Get_DamageCE() {
++ return damage_CE;
++	}
++
++ void Set_DamageVar(int i) {
++ damage_Var = i;
++	}
++ int Get_DamageVar() {
++ return damage_Var;
++	}
++
++ int target_CE;
++ int target_Var;
++
++ void Set_TargetCE(int i) {
++ target_CE = i;
++	}
++ int Get_TargetCE() {
++ return target_CE;
++	}
++
++ void Set_TargetVar(int i) {
+
+--- src\game_maniacs.h ---
+@@ -0,0 +1,42 @@
++#include <vector>
++
++namespace ManiacsBattle
++{
++ void Set_DamageCE(int i);
++ int Get_DamageCE();
++
++ void Set_DamageVar(int i);
++ int Get_DamageVar();
++
++
++ void Set_TargetCE(int i);
++ int Get_TargetCE();
++
++ void Set_TargetVar(int i);
++ int Get_TargetVar();
++
++ void Set_AutoSelect(bool i);
++ bool Get_AutoSelect();
++
++ void Set_ATBCE(int i);
++ int Get_ATBCE();
++
++ void Set_ATBVar(int i);
++ int Get_ATBVar();
++
++ void Set_StateCE(int i);
++ int Get_StateCE();
++
++ void Set_StateVar(int i);
++ int Get_StateVar();
+
+--- src\scene_battle.cpp ---
+@@ -136,6 +136,8 @@ void Scene_Battle::Start() {
+ InitEscapeChance();
+
+ SetState(State_Start);
++
++ Game_Battle::StartCommonEvent(1);
+}
+
+void Scene_Battle::InitEscapeChance() {
+@@ -605,3 +607,40 @@ void Scene_Battle::EndBattle(BattleResult result) {
+	}
+}
+
++void Scene_Battle::reset_easyrpg_battle_options(std::vector<int16_t> cmds) {
++
++ lcf::Data::system.easyrpg_battle_options = cmds;
++
++ battle_options = {};
++
++ for (auto option : lcf::Data::system.easyrpg_battle_options) {
++ if (true) {
++ battle_options.push_back((BattleOptionType)option);
++		}
++	}
++
++
++ std::vector<std::string> commands;
+
+--- src\scene_battle.h ---
+@@ -123,11 +123,16 @@ public:
+ enum BattleOptionType {
+ Battle,
+ AutoBattle,
+- Escape
++ Escape,
++ Win,
++ Lose
+	};
+
+ static void SelectionFlash(Game_Battler* battler);
+
++ Window_Command* GetOptionsWindow();
++ void Scene_Battle::reset_easyrpg_battle_options(std::vector<int16_t> cmds);
++
+protected:
+ explicit Scene_Battle(const BattleArgs& args);
+
+@@ -206,4 +211,8 @@ inline bool Scene_Battle::IsEscapeAllowed() const {
+ return allow_escape;
+}
+
++inline Window_Command* Scene_Battle::GetOptionsWindow() {
++ return options_window.get();
++}
++
+#endif
+
+--- src\scene_battle_rpg2k3.cpp ---
+@@ -49,6 +49,8 @@
+#include <algorithm>
+#include <memory>
+#include "feature.h"
++#include <game_maniacs.h>
++#include "game_variables.h"
+
+//#define EP_DEBUG_BATTLE2K3_STATE_MACHINE
+
+@@ -960,6 +962,11 @@ void Scene_Battle_Rpg2k3::vUpdate() {
+		}
+	}
+
++ if (!Game_Message::IsMessageActive()) {
++ Game_Battle::StartCommonEvent(2);
++	}
++
++
+ UpdateAnimations();
+ UpdateGraphics();
+}
+@@ -2189,6 +2196,34 @@ Scene_Battle_Rpg2k3::BattleActionReturn Scene_Battle_Rpg2k3::ProcessBattleAction
+ b->BattleStateHeal();
+ int damageTaken = b->ApplyConditions();
+ if (damageTaken != 0) {
++ int CE_ID = ManiacsBattle::Get_DamageCE();
+</diff>
+</commit>
+================================================================================
+
+<commit>
+<details> 
+Fix For dual wielding - 2yrs ago
+Description: none
+</details>
+<diff>
+--- src\game_battlealgorithm.cpp ---
+@@ -379,9 +379,9 @@ void Game_BattleAlgorithm::AlgorithmBase::Start() {
+ int CE_ID = ManiacsBattle::Get_TargetCE();
+ int Var_ID = ManiacsBattle::Get_TargetVar();
+ if (CE_ID > 0) {
+- Main_Data::game_variables->Set(Var_ID + 1, 123);
++ Main_Data::game_variables->Set(Var_ID + 1, 0);
+
+- Main_Data::game_variables->Set(Var_ID + 5, 123);
++ Main_Data::game_variables->Set(Var_ID + 5, 0);
+
+ //Source Var
+ if (source->GetType() == Game_Battler::Type_Enemy) {
+@@ -396,6 +396,26 @@ void Game_BattleAlgorithm::AlgorithmBase::Start() {
+
+ // Target Var
+ int size = std::distance(targets.begin(), targets.end());
++ if (GetType() == Type::Normal) {
++
++ size = 1;
++
++ if (source->GetType() == Game_Battler::Type_Ally) {
++ auto* actor = static_cast<Game_Actor*>(source);
++ auto* normal = static_cast<Game_BattleAlgorithm::Normal*>(this);
++ if (normal->GetWeapon()) {
++ auto w = actor->GetWeapon();
++ if (normal->GetWeapon() == 2)
++ w = actor->Get2ndWeapon();
++ if (w)
++ if (w->attack_all) {
++ size = 2;
++						}
++				}
+</diff>
+</commit>
+================================================================================
+
+<commit>
+<details> 
+Test BR - 9mth ago
+Description:
+none
+</details>
+<diff>
+--- src\game_actor.cpp ---
+@@ -934,6 +934,8 @@ void Game_Actor::ChangeBattleCommands(bool add, int id) {
+ data.changed_battle_commands = true;
+	}
+
++ need_refresh_commands = true;
++
+ // The battle commands array always has a size of 7 padded with -1. The last element before the padding is 0 which
+ // stands for the Row command
+ if (add) {
+
+--- src\game_actor.h ---
+@@ -930,6 +930,8 @@ public:
+
+ int GetActorAi() const;
+
++ bool need_refresh_commands;
++
+private:
+ void AdjustEquipmentStates(const lcf::rpg::Item* item, bool add, bool allow_battle_states);
+ void Fixup();
+
+--- src\game_battle.cpp ---
+@@ -45,6 +45,7 @@ namespace Game_Battle {
+ std::string background_name;
+
+ std::unique_ptr<Game_Interpreter_Battle> interpreter;
++ std::unique_ptr<Game_Interpreter_Battle> interpreter_pp;
+ /** Contains battle related sprites */
+ std::unique_ptr<Spriteset_Battle> spriteset;
+
+@@ -73,6 +74,7 @@ void Game_Battle::Init(int troop_id) {
+ Main_Data::game_actors->ResetBattle();
+
+ interpreter.reset(new Game_Interpreter_Battle(troop->pages));
++ interpreter_pp.reset(new Game_Interpreter_Battle(troop->pages));
+ spriteset.reset(new Spriteset_Battle(background_name, terrain_id));
+ spriteset->Update();
+ animation_actors.reset();
+@@ -90,6 +92,7 @@ void Game_Battle::Quit() {
+	}
+
+ interpreter.reset();
++ interpreter_pp.reset();
+ spriteset.reset();
+ animation_actors.reset();
+ animation_enemies.reset();
+@@ -238,9 +241,12 @@ void Game_Battle::UpdateAtbGauges() {
+ Main_Data::game_variables->Set(Var_ID + 2, cur_atb);
+ Main_Data::game_variables->Set(Var_ID + 3, increment);
+
++ // TODO
+ Game_CommonEvent* ce = Game_Battle::StartCommonEventID(CE_ID);
+ ce->UpdateBattle(true, CE_ID);
+- Game_Battle::GetInterpreter().Clear();
++ ce->KillCE();
++ Game_Battle::interpreter_pp->RemoveCommonEventID(CE_ID);
+
+--- src\game_battle.h ---
+@@ -123,6 +123,7 @@ namespace Game_Battle {
+ * @return the game interpreter.
+ */
+ Game_Interpreter& GetInterpreter();
++ Game_Interpreter& GetInterpreter_pp();
+
+ /**
+ * Gets the battle game interpreter.
+
+--- src\game_battlealgorithm.cpp ---
+@@ -445,9 +445,8 @@ void Game_BattleAlgorithm::AlgorithmBase::Start() {
+
+ // Actions Var
+
+- Game_CommonEvent* ce = Game_Battle::StartCommonEventID(CE_ID);
++ auto ce = Game_Battle::StartCommonEventID(CE_ID);
+ ce->UpdateBattle(true, CE_ID);
+- Game_Battle::GetInterpreter().Clear();
+
+ int v = ManiacsBattle::Get_TargetVar() + 4;
+ int target_type = Main_Data::game_variables->Get(v);
+
+--- src\game_battler.cpp ---
+@@ -350,9 +350,8 @@ bool Game_Battler::AddState(int state_id, bool allow_battle_states) {
+ Main_Data::game_variables->Set(Var_ID + 1, index);
+ Main_Data::game_variables->Set(Var_ID + 2, state_id);
+
+- Game_CommonEvent* ce = Game_Battle::StartCommonEventID(CE_ID);
++ auto ce = Game_Battle::StartCommonEventID(CE_ID);
+ ce->UpdateBattle(true, CE_ID);
+- Game_Battle::GetInterpreter().Clear();
+
+ int v = Var_ID + 2;
+ state_id = Main_Data::game_variables->Get(v);
+@@ -552,10 +551,8 @@ int Game_Battler::ChangeSp(int sp) {
+ Main_Data::game_variables->Set(Var_ID + 5, sp);
+
+
+- Game_CommonEvent* ce = Game_Battle::StartCommonEventID(CE_ID);
+-
++ auto ce = Game_Battle::StartCommonEventID(CE_ID);
+ ce->UpdateBattle(true, CE_ID);
+- Game_Battle::GetInterpreter().Clear();
+
+ sp = Main_Data::game_variables->Get(Var_ID + 5);
+
+@@ -826,9 +823,8 @@ int Game_Battler::ChangeAtkModifier(int modifier) {
+ Main_Data::game_variables->Set(Var_ID + 5, delta);
+
+
+- Game_CommonEvent* ce = Game_Battle::StartCommonEventID(CE_ID);
++ auto ce = Game_Battle::StartCommonEventID(CE_ID);
+ ce->UpdateBattle(true, CE_ID);
+
+--- src\game_commonevent.cpp ---
+@@ -31,7 +31,7 @@ Game_CommonEvent::Game_CommonEvent(int common_event_id) :
+{
+ auto* ce = lcf::ReaderUtil::GetElement(lcf::Data::commonevents, common_event_id);
+
+- if (ce->trigger == lcf::rpg::EventPage::Trigger_parallel
++ if ((ce->trigger == lcf::rpg::EventPage::Trigger_parallel)// || ce->trigger == 7 || ce->trigger == 6)
+ && !ce->event_commands.empty()) {
+ interpreter.reset(new Game_Interpreter_Map());
+ interpreter->Push(this);
+@@ -43,12 +43,19 @@ Game_CommonEvent::Game_CommonEvent(int common_event_id) :
+void Game_CommonEvent::ForceCreate(int ce_ID) {
+ auto* ce = lcf::ReaderUtil::GetElement(lcf::Data::commonevents, ce_ID);
+
+- if ((ce->trigger == lcf::rpg::EventPage::Trigger_parallel || ce->ID == ManiacsBattle::Get_ATBCE() || ce->ID == ManiacsBattle::Get_TargetCE() ||
++ if ((ce->trigger == lcf::rpg::EventPage::Trigger_parallel || ce->trigger == 7 || ce->trigger == 6 || ce->ID == ManiacsBattle::Get_ATBCE() || ce->ID == ManiacsBattle::Get_TargetCE() ||
+ ce->ID == ManiacsBattle::Get_DamageCE() || ce->ID == ManiacsBattle::Get_StateCE() || ce->ID == ManiacsBattle::Get_StatsCE())
+ && !ce->event_commands.empty())
+	{
+- interpreter.reset(new Game_Interpreter_Map());
+- interpreter->Push(this);
++ bool main_flag = false;
++ /*	main_flag = true;
++ if (ce->trigger != 7)
++ main_flag = false;*/
++
+
+--- src\game_commonevent.h ---
+@@ -26,6 +26,7 @@
+#include <lcf/rpg/saveeventexecstate.h>
+#include "async_op.h"
+#include "string_view.h"
++#include <game_interpreter_battle.h>
+
+/**
+ * Game_CommonEvent class.
+@@ -54,7 +55,9 @@ public:
+ */
+ AsyncOp Update(bool resume_async);
+
+- AsyncOp Game_CommonEvent::UpdateBattle(bool resume_async, int ce_ID);
++ AsyncOp UpdateBattle(bool resume_async, int ce_ID);
++
++ void KillCE();
+
+ /**
+ * Gets common event index.
+@@ -121,6 +124,7 @@ private:
+
+ /** Interpreter for parallel common events. */
+ std::unique_ptr<Game_Interpreter_Map> interpreter;
++ std::unique_ptr<Game_Interpreter_Battle> interpreter_pp;
+};
+
+#endif
+
+--- src\game_interpreter.cpp ---
+@@ -68,6 +68,8 @@
+#include "baseui.h"
+#include "algo.h"
+#include "rand.h"
++#include <game_maniacs.h>
++#include <scene_battle.h>
+
+enum BranchSubcommand {
+ eOptionBranchElse = 1
+@@ -108,6 +110,7 @@ void Game_Interpreter::Push(
+ return;
+	}
+
++ // Output::Debug("Limit : {}", (int)_state.stack.size());
+ if ((int)_state.stack.size() > call_stack_limit) {
+ Output::Error("Call Event limit ({}) has been exceeded", call_stack_limit);
+	}
+@@ -421,9 +424,13 @@ void Game_Interpreter::Update(bool reset_loop_count) {
+ break;
+			}
+
+- if (!Input::IsTriggered(Input::DECISION)) {
++ /*if (!Input::IsTriggered(Input::DECISION)) {
++ break;
++ }*/
++ if (!Input::IsAnyTriggered()) {
+ break;
+			}
++
+ _state.wait_key_enter = false;
+		}
+
+@@ -489,7 +496,7 @@ void Game_Interpreter::Update(bool reset_loop_count) {
+
+ if (Game_Battle::IsBattleRunning() && Player::IsRPG2k3() && Game_Battle::CheckWin()) {
+
+--- src\game_interpreter.h ---
+@@ -290,6 +290,16 @@ protected:
+ bool CommandManiacControlStrings(lcf::rpg::EventCommand const& com);
+ bool CommandManiacCallCommand(lcf::rpg::EventCommand const& com);
+
++ bool CommandManiacGetBattleInfo(lcf::rpg::EventCommand const& com);
++ bool CommandManiacControlBattle(lcf::rpg::EventCommand const& com);
++ bool CommandManiacControlAtbGauge(lcf::rpg::EventCommand const& com);
++ bool CommandManiacChangeBattleCommandEx(lcf::rpg::EventCommand const& com);
++
++ bool CommandGetStringFromDB(lcf::rpg::EventCommand const& com);
++ bool CommandUseItem(lcf::rpg::EventCommand const& com);
++ bool CommandCanUseItem(lcf::rpg::EventCommand const& com);
++ bool CommandPrint(lcf::rpg::EventCommand const& com);
++
+ int DecodeInt(lcf::DBArray<int32_t>::const_iterator& it);
+ const std::string DecodeString(lcf::DBArray<int32_t>::const_iterator& it);
+ lcf::rpg::MoveCommand DecodeMove(lcf::DBArray<int32_t>::const_iterator& it);
+
+--- src\game_interpreter_battle.cpp ---
+@@ -43,6 +43,11 @@ Game_Interpreter_Battle::Game_Interpreter_Battle(Span<const lcf::rpg::TroopPage>
+{
+}
+
++Game_Interpreter_Battle::Game_Interpreter_Battle(bool main_flag)
++	: Game_Interpreter(main_flag)
++{
++}
++
+bool Game_Interpreter_Battle::AreConditionsMet(const lcf::rpg::TroopPageCondition& condition, Game_Battler* source) {
+ if (!condition.flags.switch_a &&
+ !condition.flags.switch_b &&
+@@ -458,9 +463,14 @@ bool Game_Interpreter_Battle::CommandShowBattleAnimation(lcf::rpg::EventCommand
+
+ if (allies) {
+ // Allies counted from 1
+- target -= 1;
+- if (target >= 0 && target < Main_Data::game_party->GetBattlerCount()) {
++ //target -= 1;
++ // ??? The editor display all actors, and not only Actors in party
+
+--- src\game_interpreter_battle.h ---
++ explicit Game_Interpreter_Battle(bool main_flag = false);
+
+ int GetNumPages() const;
+
+@@ -60,6 +61,7 @@ public:
+
+ Game_CommonEvent* StartCommonEvent(int i);
+ void PushCommonEvent(Game_CommonEvent* ev);
++ void RemoveCommonEventID(int eventID);
+
+ bool ExecuteCommand(lcf::rpg::EventCommand const& com) override;
+
+@@ -78,10 +80,6 @@ private:
+ bool CommandElseBranchBattle(lcf::rpg::EventCommand const& com);
+ bool CommandEndBranchBattle(lcf::rpg::EventCommand const& com);
+
+- bool CommandManiacControlBattle(lcf::rpg::EventCommand const& com);
+- bool CommandManiacControlAtbGauge(lcf::rpg::EventCommand const& com);
+- bool CommandManiacChangeBattleCommandEx(lcf::rpg::EventCommand const& com);
+- bool CommandManiacGetBattleInfo(lcf::rpg::EventCommand const& com);
+
+private:
+ Span<const lcf::rpg::TroopPage> pages;
+
+--- src\game_interprete…ntrol_variables.cpp ---
+@@ -134,7 +134,7 @@ int ControlVariables::Actor(int op, int actor_id) {
+ case 16:
+ // ATB
+ if (Player::IsPatchManiac()) {
+- return actor->GetAtbGauge();
++ return actor->GetAtbGauge() * 100 / actor->GetMaxAtbGauge();
+			}
+ break;
+	}
+@@ -349,7 +349,7 @@ int ControlVariables::Enemy(int op, int enemy_idx) {
+ case 9:
+ // ATB
+ if (Player::IsPatchManiac()) {
+- return enemy->GetAtbGauge();
++ return enemy->GetAtbGauge() * 100 / enemy->GetMaxAtbGauge();
+			}
+ break;
+	}
+
+--- src\game_map.cpp ---
+@@ -157,8 +157,9 @@ int Game_Map::GetMapSaveCount() {
+void Game_Map::Setup(std::unique_ptr<lcf::rpg::Map> map_in) {
+ Dispose();
+
+- screen_width = (Player::screen_width / 16) * SCREEN_TILE_SIZE;
+- screen_height = (Player::screen_height / 16) * SCREEN_TILE_SIZE;
++ int screen_mod = Player::screen_width % 8;
++ screen_width = (Player::screen_width / 8 + screen_mod) * SCREEN_TILE_SIZE / 2;
++ screen_height = (Player::screen_height / 8) * SCREEN_TILE_SIZE / 2;
+
+ map = std::move(map_in);
+
+
+--- src\game_strings.cpp ---
+@@ -141,6 +141,7 @@ int Game_Strings::Split(Str_Params params, const std::string& delimiter, int str
+ splits++;
+ str.erase(0, index + delimiter.length());
+			}
++ splits++;
+		}
+	}
+
+
+--- src\game_strings.h ---
+@@ -72,8 +72,9 @@ public:
+ static std::optional<std::string> ManiacsCommandInserter(char ch, const char** iter, const char* end, uint32_t escape_char);
+ static std::optional<std::string> ManiacsCommandInserterHex(char ch, const char** iter, const char* end, uint32_t escape_char);
+
+-private:
+ void Set(Str_Params params, StringView string);
++private:
++ //void Set(Str_Params params, StringView string);
+ bool ShouldWarn(int id) const;
+ void WarnGet(int id) const;
+
+
+--- src\maniac_patch.cpp ---
+@@ -407,6 +407,15 @@ int process(std::vector<int32_t>::iterator& it, std::vector<int32_t>::iterator e
+					}
+ return 0;
+			}
++ case Op::AssignInplace:
++
++ Output::Debug("EasyRPG : WIP command (v[Z] = v[X]=YYY )");
++ ++it;
++ imm = process(it, end, ip);
++ imm2 = process(it, end, ip);
++ Main_Data::game_variables->Set(imm, imm2);
++ return Main_Data::game_variables->Get(imm);
++
+ default:
+ Output::Warning("Maniac: Expression contains unsupported operation {}", static_cast<int>(op));
+ return 0;
+
+--- src\scene_battle.cpp ---
+@@ -137,7 +137,6 @@ void Scene_Battle::Start() {
+
+ SetState(State_Start);
+
+- Game_Battle::StartCommonEvent(1);
+}
+
+void Scene_Battle::InitEscapeChance() {
+
+--- src\scene_battle_rpg2k3.cpp ---
+@@ -351,7 +351,8 @@ void Scene_Battle_Rpg2k3::CreateUi() {
+ status_window->SetY(y);
+
+ if (lcf::Data::battlecommands.battle_type == lcf::rpg::BattleCommands::BattleType_gauge) {
+- command_window->SetY(Player::screen_height / 2 - 80 / 2 + 12);
++ command_window->SetY(185);
++ command_window->SetHeight(54);
+ item_window->SetY(76);
+ skill_window->SetY(76);
+		}
+@@ -631,9 +632,11 @@ void Scene_Battle_Rpg2k3::CreateBattleCommandWindow() {
+
+ SetBattleCommandsDisable(*command_window, actor);
+
+- int height = 80;
++ int height = 55;
+
++ command_window->SetWidth(88);
+ command_window->SetHeight(height);
++
+ switch (lcf::Data::battlecommands.battle_type) {
+
+--- src\sprite_actor.cpp ---
+@@ -141,6 +141,9 @@ void Sprite_Actor::SetAnimationState(int state, LoopState loop, int animation_id
+ if (state == 101) {
+ state = 7;
+	}
++ bool was_defending = false;
++ if (anim_state == AnimationState_Defending)
++ was_defending = true;
+
+ anim_state = state;
+
+@@ -178,9 +181,18 @@ void Sprite_Actor::SetAnimationState(int state, LoopState loop, int animation_id
+ Output::Warning("Invalid battle animation ID {}", animation_id);
+ animation.reset();
+			} else {
++
++ if (anim_state == AnimationState_Defending) {
++ if (!was_defending) {
+ 		animation.reset(new BattleAnimationBattler(*battle_anim, { battler }));
+ 		animation->SetZ(GetZ());
+					}
++				}
+
+</diff>
+</commit>
+================================================================================
+
+<commit>
+<details> 
+EasyRPG Update - 8mth ago
+Description:
+none
+</details>
+<diff>
+--- src\game_commonevent.cpp ---
+@@ -87,7 +87,7 @@ AsyncOp Game_CommonEvent::Update(bool resume_async) {
+void Game_CommonEvent::KillCE() {
+ if (interpreter_pp) {
+ interpreter_pp->Clear();
+- interpreter_pp.reset(new Game_Interpreter_Battle());
++ interpreter_pp.reset(new Game_Interpreter_Battle(true));
+	}
+}
+
+
+--- src\game_interpreter.cpp ---
+@@ -807,17 +807,6 @@ bool Game_Interpreter::ExecuteCommand(lcf::rpg::EventCommand const& com) {
+ return CommandCanUseItem(com);
+ case 2057:
+ return CommandUseItem(com);
+- return CmdSetup<&Game_Interpreter::CommandManiacCallCommand, 6>(com);
+- case Cmd::Maniac_GetGameInfo:
+- return CmdSetup<&Game_Interpreter::CommandManiacGetGameInfo, 8>(com);
+- case Cmd::EasyRpg_SetInterpreterFlag:
+- return CmdSetup<&Game_Interpreter::CommandEasyRpgSetInterpreterFlag, 2>(com);
+- case Cmd::EasyRpg_ProcessJson:
+- return CmdSetup<&Game_Interpreter::CommandEasyRpgProcessJson, 8>(com);
+- case Cmd::EasyRpg_CloneMapEvent:
+- return CmdSetup<&Game_Interpreter::CommandEasyRpgCloneMapEvent, 10>(com);
+- case Cmd::EasyRpg_DestroyMapEvent:
+- return CmdSetup<&Game_Interpreter::CommandEasyRpgDestroyMapEvent, 2>(com);
+ default:
+ return true;
+	}
+@@ -1722,78 +1711,6 @@ bool Game_Interpreter::CommandChangeLevel(lcf::rpg::EventCommand const& com) { /
+ return true;
+}
+
+-int Game_Interpreter::ValueOrVariable(int mode, int val) {
+- if (mode == 0) {
+- return val;
+
+--- src\game_interpreter_battle.cpp ---
+@@ -73,7 +73,7 @@ std::unique_ptr<Game_Interpreter_Battle> maniac_interpreter;
+Game_Interpreter_Battle::Game_Interpreter_Battle(Span<const lcf::rpg::TroopPage> pages)
+	: Game_Interpreter(true), pages(pages), executed(pages.size(), false)
+{
+- maniac_interpreter.reset(new Game_Interpreter_Battle());
++ maniac_interpreter.reset(new Game_Interpreter_Battle(true));
+}
+
+Game_Interpreter_Battle::Game_Interpreter_Battle()
+@@ -253,14 +253,6 @@ bool Game_Interpreter_Battle::ExecuteCommand(lcf::rpg::EventCommand const& com)
+ return CmdSetup<&Game_Interpreter_Battle::CommandElseBranchBattle, 0>(com);
+ case Cmd::EndBranch_B:
+ return CmdSetup<&Game_Interpreter_Battle::CommandEndBranchBattle, 0>(com);
+- case Cmd::Maniac_ControlBattle:
+- return CmdSetup<&Game_Interpreter_Battle::CommandManiacControlBattle, 4>(com);
+- case Cmd::Maniac_ControlAtbGauge:
+- return CmdSetup<&Game_Interpreter_Battle::CommandManiacControlAtbGauge, 7>(com);
+- case Cmd::Maniac_ChangeBattleCommandEx:
+- return CmdSetup<&Game_Interpreter_Battle::CommandManiacChangeBattleCommandEx, 2>(com);
+- case Cmd::Maniac_GetBattleInfo:
+- return CmdSetup<&Game_Interpreter_Battle::CommandManiacGetBattleInfo, 5>(com);
+ default:
+ return Game_Interpreter::ExecuteCommand(com);
+	}
+@@ -782,266 +774,6 @@ bool Game_Interpreter_Battle::ProcessManiacSubEvents() {
+ return false;
+}
+
+--- src\game_strings.cpp ---
+@@ -162,12 +162,14 @@ int Game_Strings::Split(Str_Params params, const std::string& delimiter, int str
+ params.string_id++;
+ components++;
+		}
+-	} else {
++	}
++ else {
+ components = 1;
+
+ if (str.find(delimiter) == std::string::npos) {
+ // token not found
+-		} else {
++		}
++ else {
+ // This works for UTF-8
+ std::string token;
+ for (auto index = str.find(delimiter); index != std::string::npos; index = str.find(delimiter)) {
+@@ -177,7 +179,6 @@ int Game_Strings::Split(Str_Params params, const std::string& delimiter, int str
+ components++;
+ str.erase(0, index + delimiter.length());
+			}
+- splits++;
+		}
+	}
+
+
+--- src\maniac_patch.cpp ---
+@@ -526,15 +526,6 @@ int Process(std::vector<int32_t>::iterator& it, std::vector<int32_t>::iterator e
+					}
+ return 0;
+			}
+- case Op::AssignInplace:
+-
+- Output::Debug("EasyRPG : WIP command (v[Z] = v[X]=YYY )");
+- ++it;
+- imm = process(it, end, ip);
+- imm2 = process(it, end, ip);
+- Main_Data::game_variables->Set(imm, imm2);
+- return Main_Data::game_variables->Get(imm);
+-
+ default:
+ Output::Warning("Maniac: Expression contains unsupported operation {}", static_cast<int>(op));
+ return 0;
+</diff>
+</commit>
+================================================================================
+
+
+<commit>
+<details> 
+Test BR - 9mth ago
+Description:
+none
+</details>
+<diff>
+--- src\game_actor.cpp ---
+@@ -934,6 +934,8 @@ void Game_Actor::ChangeBattleCommands(bool add, int id) {
+ data.changed_battle_commands = true;
+	}
+
++ need_refresh_commands = true;
++
+ // The battle commands array always has a size of 7 padded with -1. The last element before the padding is 0 which
+ // stands for the Row command
+ if (add) {
+
+--- src\game_actor.h ---
+@@ -930,6 +930,8 @@ public:
+
+ int GetActorAi() const;
+
++ bool need_refresh_commands;
++
+private:
+ void AdjustEquipmentStates(const lcf::rpg::Item* item, bool add, bool allow_battle_states);
+ void Fixup();
+
+--- src\game_battle.cpp ---
+@@ -45,6 +45,7 @@ namespace Game_Battle {
+ std::string background_name;
+
+ std::unique_ptr<Game_Interpreter_Battle> interpreter;
++ std::unique_ptr<Game_Interpreter_Battle> interpreter_pp;
+ /** Contains battle related sprites */
+ std::unique_ptr<Spriteset_Battle> spriteset;
+
+@@ -73,6 +74,7 @@ void Game_Battle::Init(int troop_id) {
+ Main_Data::game_actors->ResetBattle();
+
+ interpreter.reset(new Game_Interpreter_Battle(troop->pages));
++ interpreter_pp.reset(new Game_Interpreter_Battle(troop->pages));
+ spriteset.reset(new Spriteset_Battle(background_name, terrain_id));
+ spriteset->Update();
+ animation_actors.reset();
+@@ -90,6 +92,7 @@ void Game_Battle::Quit() {
+	}
+
+ interpreter.reset();
++ interpreter_pp.reset();
+ spriteset.reset();
+ animation_actors.reset();
+ animation_enemies.reset();
+@@ -238,9 +241,12 @@ void Game_Battle::UpdateAtbGauges() {
+ Main_Data::game_variables->Set(Var_ID + 2, cur_atb);
+ Main_Data::game_variables->Set(Var_ID + 3, increment);
+
++ // TODO
+ Game_CommonEvent* ce = Game_Battle::StartCommonEventID(CE_ID);
+ ce->UpdateBattle(true, CE_ID);
+- Game_Battle::GetInterpreter().Clear();
++ ce->KillCE();
++ Game_Battle::interpreter_pp->RemoveCommonEventID(CE_ID);
+
+--- src\game_battle.h ---
+@@ -123,6 +123,7 @@ namespace Game_Battle {
+ * @return the game interpreter.
+ */
+ Game_Interpreter& GetInterpreter();
++ Game_Interpreter& GetInterpreter_pp();
+
+ /**
+ * Gets the battle game interpreter.
+
+--- src\game_battlealgorithm.cpp ---
+@@ -445,9 +445,8 @@ void Game_BattleAlgorithm::AlgorithmBase::Start() {
+
+ // Actions Var
+
+- Game_CommonEvent* ce = Game_Battle::StartCommonEventID(CE_ID);
++ auto ce = Game_Battle::StartCommonEventID(CE_ID);
+ ce->UpdateBattle(true, CE_ID);
+- Game_Battle::GetInterpreter().Clear();
+
+ int v = ManiacsBattle::Get_TargetVar() + 4;
+ int target_type = Main_Data::game_variables->Get(v);
+
+--- src\game_battler.cpp ---
+@@ -350,9 +350,8 @@ bool Game_Battler::AddState(int state_id, bool allow_battle_states) {
+ Main_Data::game_variables->Set(Var_ID + 1, index);
+ Main_Data::game_variables->Set(Var_ID + 2, state_id);
+
+- Game_CommonEvent* ce = Game_Battle::StartCommonEventID(CE_ID);
++ auto ce = Game_Battle::StartCommonEventID(CE_ID);
+ ce->UpdateBattle(true, CE_ID);
+- Game_Battle::GetInterpreter().Clear();
+
+ int v = Var_ID + 2;
+ state_id = Main_Data::game_variables->Get(v);
+@@ -552,10 +551,8 @@ int Game_Battler::ChangeSp(int sp) {
+ Main_Data::game_variables->Set(Var_ID + 5, sp);
+
+
+- Game_CommonEvent* ce = Game_Battle::StartCommonEventID(CE_ID);
+-
++ auto ce = Game_Battle::StartCommonEventID(CE_ID);
+ ce->UpdateBattle(true, CE_ID);
+- Game_Battle::GetInterpreter().Clear();
+
+ sp = Main_Data::game_variables->Get(Var_ID + 5);
+
+@@ -826,9 +823,8 @@ int Game_Battler::ChangeAtkModifier(int modifier) {
+ Main_Data::game_variables->Set(Var_ID + 5, delta);
+
+
+- Game_CommonEvent* ce = Game_Battle::StartCommonEventID(CE_ID);
++ auto ce = Game_Battle::StartCommonEventID(CE_ID);
+ ce->UpdateBattle(true, CE_ID);
+
+--- src\game_commonevent.cpp ---
+@@ -31,7 +31,7 @@ Game_CommonEvent::Game_CommonEvent(int common_event_id) :
+{
+ auto* ce = lcf::ReaderUtil::GetElement(lcf::Data::commonevents, common_event_id);
+
+- if (ce->trigger == lcf::rpg::EventPage::Trigger_parallel
++ if ((ce->trigger == lcf::rpg::EventPage::Trigger_parallel)// || ce->trigger == 7 || ce->trigger == 6)
+ && !ce->event_commands.empty()) {
+ interpreter.reset(new Game_Interpreter_Map());
+ interpreter->Push(this);
+@@ -43,12 +43,19 @@ Game_CommonEvent::Game_CommonEvent(int common_event_id) :
+void Game_CommonEvent::ForceCreate(int ce_ID) {
+ auto* ce = lcf::ReaderUtil::GetElement(lcf::Data::commonevents, ce_ID);
+
+- if ((ce->trigger == lcf::rpg::EventPage::Trigger_parallel || ce->ID == ManiacsBattle::Get_ATBCE() || ce->ID == ManiacsBattle::Get_TargetCE() ||
++ if ((ce->trigger == lcf::rpg::EventPage::Trigger_parallel || ce->trigger == 7 || ce->trigger == 6 || ce->ID == ManiacsBattle::Get_ATBCE() || ce->ID == ManiacsBattle::Get_TargetCE() ||
+ ce->ID == ManiacsBattle::Get_DamageCE() || ce->ID == ManiacsBattle::Get_StateCE() || ce->ID == ManiacsBattle::Get_StatsCE())
+ && !ce->event_commands.empty())
+	{
+- interpreter.reset(new Game_Interpreter_Map());
+- interpreter->Push(this);
++ bool main_flag = false;
++ /*	main_flag = true;
++ if (ce->trigger != 7)
++ main_flag = false;*/
++
+
+--- src\game_commonevent.h ---
+@@ -26,6 +26,7 @@
+#include <lcf/rpg/saveeventexecstate.h>
+#include "async_op.h"
+#include "string_view.h"
++#include <game_interpreter_battle.h>
+
+/**
+ * Game_CommonEvent class.
+@@ -54,7 +55,9 @@ public:
+ */
+ AsyncOp Update(bool resume_async);
+
+- AsyncOp Game_CommonEvent::UpdateBattle(bool resume_async, int ce_ID);
++ AsyncOp UpdateBattle(bool resume_async, int ce_ID);
++
++ void KillCE();
+
+ /**
+ * Gets common event index.
+@@ -121,6 +124,7 @@ private:
+
+ /** Interpreter for parallel common events. */
+ std::unique_ptr<Game_Interpreter_Map> interpreter;
++ std::unique_ptr<Game_Interpreter_Battle> interpreter_pp;
+};
+
+#endif
+
+--- src\game_interpreter.cpp ---
+@@ -68,6 +68,8 @@
+#include "baseui.h"
+#include "algo.h"
+#include "rand.h"
++#include <game_maniacs.h>
++#include <scene_battle.h>
+
+enum BranchSubcommand {
+ eOptionBranchElse = 1
+@@ -108,6 +110,7 @@ void Game_Interpreter::Push(
+ return;
+	}
+
++ // Output::Debug("Limit : {}", (int)_state.stack.size());
+ if ((int)_state.stack.size() > call_stack_limit) {
+ Output::Error("Call Event limit ({}) has been exceeded", call_stack_limit);
+	}
+@@ -421,9 +424,13 @@ void Game_Interpreter::Update(bool reset_loop_count) {
+ break;
+			}
+
+- if (!Input::IsTriggered(Input::DECISION)) {
++ /*if (!Input::IsTriggered(Input::DECISION)) {
++ break;
++ }*/
++ if (!Input::IsAnyTriggered()) {
+ break;
+			}
++
+ _state.wait_key_enter = false;
+		}
+
+@@ -489,7 +496,7 @@ void Game_Interpreter::Update(bool reset_loop_count) {
+
+ if (Game_Battle::IsBattleRunning() && Player::IsRPG2k3() && Game_Battle::CheckWin()) {
+
+--- src\game_interpreter.h ---
+@@ -290,6 +290,16 @@ protected:
+ bool CommandManiacControlStrings(lcf::rpg::EventCommand const& com);
+ bool CommandManiacCallCommand(lcf::rpg::EventCommand const& com);
+
++ bool CommandManiacGetBattleInfo(lcf::rpg::EventCommand const& com);
++ bool CommandManiacControlBattle(lcf::rpg::EventCommand const& com);
++ bool CommandManiacControlAtbGauge(lcf::rpg::EventCommand const& com);
++ bool CommandManiacChangeBattleCommandEx(lcf::rpg::EventCommand const& com);
++
++ bool CommandGetStringFromDB(lcf::rpg::EventCommand const& com);
++ bool CommandUseItem(lcf::rpg::EventCommand const& com);
++ bool CommandCanUseItem(lcf::rpg::EventCommand const& com);
++ bool CommandPrint(lcf::rpg::EventCommand const& com);
++
+ int DecodeInt(lcf::DBArray<int32_t>::const_iterator& it);
+ const std::string DecodeString(lcf::DBArray<int32_t>::const_iterator& it);
+ lcf::rpg::MoveCommand DecodeMove(lcf::DBArray<int32_t>::const_iterator& it);
+
+--- src\game_interpreter_battle.cpp ---
+@@ -43,6 +43,11 @@ Game_Interpreter_Battle::Game_Interpreter_Battle(Span<const lcf::rpg::TroopPage>
+{
+}
+
++Game_Interpreter_Battle::Game_Interpreter_Battle(bool main_flag)
++	: Game_Interpreter(main_flag)
++{
++}
++
+bool Game_Interpreter_Battle::AreConditionsMet(const lcf::rpg::TroopPageCondition& condition, Game_Battler* source) {
+ if (!condition.flags.switch_a &&
+ !condition.flags.switch_b &&
+@@ -458,9 +463,14 @@ bool Game_Interpreter_Battle::CommandShowBattleAnimation(lcf::rpg::EventCommand
+
+ if (allies) {
+ // Allies counted from 1
+- target -= 1;
+- if (target >= 0 && target < Main_Data::game_party->GetBattlerCount()) {
++ //target -= 1;
++ // ??? The editor display all actors, and not only Actors in party
+
+--- src\game_interpreter_battle.h ---
++ explicit Game_Interpreter_Battle(bool main_flag = false);
+
+ int GetNumPages() const;
+
+@@ -60,6 +61,7 @@ public:
+
+ Game_CommonEvent* StartCommonEvent(int i);
+ void PushCommonEvent(Game_CommonEvent* ev);
++ void RemoveCommonEventID(int eventID);
+
+ bool ExecuteCommand(lcf::rpg::EventCommand const& com) override;
+
+@@ -78,10 +80,6 @@ private:
+ bool CommandElseBranchBattle(lcf::rpg::EventCommand const& com);
+ bool CommandEndBranchBattle(lcf::rpg::EventCommand const& com);
+
+- bool CommandManiacControlBattle(lcf::rpg::EventCommand const& com);
+- bool CommandManiacControlAtbGauge(lcf::rpg::EventCommand const& com);
+- bool CommandManiacChangeBattleCommandEx(lcf::rpg::EventCommand const& com);
+- bool CommandManiacGetBattleInfo(lcf::rpg::EventCommand const& com);
+
+private:
+ Span<const lcf::rpg::TroopPage> pages;
+
+--- src\game_interprete…ntrol_variables.cpp ---
+@@ -134,7 +134,7 @@ int ControlVariables::Actor(int op, int actor_id) {
+ case 16:
+ // ATB
+ if (Player::IsPatchManiac()) {
+- return actor->GetAtbGauge();
++ return actor->GetAtbGauge() * 100 / actor->GetMaxAtbGauge();
+			}
+ break;
+	}
+@@ -349,7 +349,7 @@ int ControlVariables::Enemy(int op, int enemy_idx) {
+ case 9:
+ // ATB
+ if (Player::IsPatchManiac()) {
+- return enemy->GetAtbGauge();
++ return enemy->GetAtbGauge() * 100 / enemy->GetMaxAtbGauge();
+			}
+ break;
+	}
+
+--- src\game_map.cpp ---
+@@ -157,8 +157,9 @@ int Game_Map::GetMapSaveCount() {
+void Game_Map::Setup(std::unique_ptr<lcf::rpg::Map> map_in) {
+ Dispose();
+
+- screen_width = (Player::screen_width / 16) * SCREEN_TILE_SIZE;
+- screen_height = (Player::screen_height / 16) * SCREEN_TILE_SIZE;
++ int screen_mod = Player::screen_width % 8;
++ screen_width = (Player::screen_width / 8 + screen_mod) * SCREEN_TILE_SIZE / 2;
++ screen_height = (Player::screen_height / 8) * SCREEN_TILE_SIZE / 2;
+
+ map = std::move(map_in);
+
+
+--- src\game_strings.cpp ---
+@@ -141,6 +141,7 @@ int Game_Strings::Split(Str_Params params, const std::string& delimiter, int str
+ splits++;
+ str.erase(0, index + delimiter.length());
+			}
++ splits++;
+		}
+	}
+
+
+--- src\game_strings.h ---
+@@ -72,8 +72,9 @@ public:
+ static std::optional<std::string> ManiacsCommandInserter(char ch, const char** iter, const char* end, uint32_t escape_char);
+ static std::optional<std::string> ManiacsCommandInserterHex(char ch, const char** iter, const char* end, uint32_t escape_char);
+
+-private:
+ void Set(Str_Params params, StringView string);
++private:
++ //void Set(Str_Params params, StringView string);
+ bool ShouldWarn(int id) const;
+ void WarnGet(int id) const;
+
+
+--- src\maniac_patch.cpp ---
+@@ -407,6 +407,15 @@ int process(std::vector<int32_t>::iterator& it, std::vector<int32_t>::iterator e
+					}
+ return 0;
+			}
++ case Op::AssignInplace:
++
++ Output::Debug("EasyRPG : WIP command (v[Z] = v[X]=YYY )");
++ ++it;
++ imm = process(it, end, ip);
++ imm2 = process(it, end, ip);
++ Main_Data::game_variables->Set(imm, imm2);
++ return Main_Data::game_variables->Get(imm);
++
+ default:
+ Output::Warning("Maniac: Expression contains unsupported operation {}", static_cast<int>(op));
+ return 0;
+
+--- src\scene_battle.cpp ---
+@@ -137,7 +137,6 @@ void Scene_Battle::Start() {
+
+ SetState(State_Start);
+
+- Game_Battle::StartCommonEvent(1);
+}
+
+void Scene_Battle::InitEscapeChance() {
+
+--- src\scene_battle_rpg2k3.cpp ---
+@@ -351,7 +351,8 @@ void Scene_Battle_Rpg2k3::CreateUi() {
+ status_window->SetY(y);
+
+ if (lcf::Data::battlecommands.battle_type == lcf::rpg::BattleCommands::BattleType_gauge) {
+- command_window->SetY(Player::screen_height / 2 - 80 / 2 + 12);
++ command_window->SetY(185);
++ command_window->SetHeight(54);
+ item_window->SetY(76);
+ skill_window->SetY(76);
+		}
+@@ -631,9 +632,11 @@ void Scene_Battle_Rpg2k3::CreateBattleCommandWindow() {
+
+ SetBattleCommandsDisable(*command_window, actor);
+
+- int height = 80;
++ int height = 55;
+
++ command_window->SetWidth(88);
+ command_window->SetHeight(height);
++
+ switch (lcf::Data::battlecommands.battle_type) {
+
+--- src\sprite_actor.cpp ---
+@@ -141,6 +141,9 @@ void Sprite_Actor::SetAnimationState(int state, LoopState loop, int animation_id
+ if (state == 101) {
+ state = 7;
+	}
++ bool was_defending = false;
++ if (anim_state == AnimationState_Defending)
++ was_defending = true;
+
+ anim_state = state;
+
+@@ -178,9 +181,18 @@ void Sprite_Actor::SetAnimationState(int state, LoopState loop, int animation_id
+ Output::Warning("Invalid battle animation ID {}", animation_id);
+ animation.reset();
+			} else {
++
++ if (anim_state == AnimationState_Defending) {
++ if (!was_defending) {
+ 		animation.reset(new BattleAnimationBattler(*battle_anim, { battler }));
+ 		animation->SetZ(GetZ());
+					}
++				}
+
+</diff>
+</commit>
+================================================================================
+
+<commit>
+<details> 
+EasyRPG Update - 8mth ago
+Description:
+none
+</details>
+<diff>
+--- src\game_commonevent.cpp ---
+@@ -87,7 +87,7 @@ AsyncOp Game_CommonEvent::Update(bool resume_async) {
+void Game_CommonEvent::KillCE() {
+ if (interpreter_pp) {
+ interpreter_pp->Clear();
+- interpreter_pp.reset(new Game_Interpreter_Battle());
++ interpreter_pp.reset(new Game_Interpreter_Battle(true));
+	}
+}
+
+
+--- src\game_interpreter.cpp ---
+@@ -807,17 +807,6 @@ bool Game_Interpreter::ExecuteCommand(lcf::rpg::EventCommand const& com) {
+ return CommandCanUseItem(com);
+ case 2057:
+ return CommandUseItem(com);
+- return CmdSetup<&Game_Interpreter::CommandManiacCallCommand, 6>(com);
+- case Cmd::Maniac_GetGameInfo:
+- return CmdSetup<&Game_Interpreter::CommandManiacGetGameInfo, 8>(com);
+- case Cmd::EasyRpg_SetInterpreterFlag:
+- return CmdSetup<&Game_Interpreter::CommandEasyRpgSetInterpreterFlag, 2>(com);
+- case Cmd::EasyRpg_ProcessJson:
+- return CmdSetup<&Game_Interpreter::CommandEasyRpgProcessJson, 8>(com);
+- case Cmd::EasyRpg_CloneMapEvent:
+- return CmdSetup<&Game_Interpreter::CommandEasyRpgCloneMapEvent, 10>(com);
+- case Cmd::EasyRpg_DestroyMapEvent:
+- return CmdSetup<&Game_Interpreter::CommandEasyRpgDestroyMapEvent, 2>(com);
+ default:
+ return true;
+	}
+@@ -1722,78 +1711,6 @@ bool Game_Interpreter::CommandChangeLevel(lcf::rpg::EventCommand const& com) { /
+ return true;
+}
+
+-int Game_Interpreter::ValueOrVariable(int mode, int val) {
+- if (mode == 0) {
+- return val;
+
+--- src\game_interpreter_battle.cpp ---
+@@ -73,7 +73,7 @@ std::unique_ptr<Game_Interpreter_Battle> maniac_interpreter;
+Game_Interpreter_Battle::Game_Interpreter_Battle(Span<const lcf::rpg::TroopPage> pages)
+	: Game_Interpreter(true), pages(pages), executed(pages.size(), false)
+{
+- maniac_interpreter.reset(new Game_Interpreter_Battle());
++ maniac_interpreter.reset(new Game_Interpreter_Battle(true));
+}
+
+Game_Interpreter_Battle::Game_Interpreter_Battle()
+@@ -253,14 +253,6 @@ bool Game_Interpreter_Battle::ExecuteCommand(lcf::rpg::EventCommand const& com)
+ return CmdSetup<&Game_Interpreter_Battle::CommandElseBranchBattle, 0>(com);
+ case Cmd::EndBranch_B:
+ return CmdSetup<&Game_Interpreter_Battle::CommandEndBranchBattle, 0>(com);
+- case Cmd::Maniac_ControlBattle:
+- return CmdSetup<&Game_Interpreter_Battle::CommandManiacControlBattle, 4>(com);
+- case Cmd::Maniac_ControlAtbGauge:
+- return CmdSetup<&Game_Interpreter_Battle::CommandManiacControlAtbGauge, 7>(com);
+- case Cmd::Maniac_ChangeBattleCommandEx:
+- return CmdSetup<&Game_Interpreter_Battle::CommandManiacChangeBattleCommandEx, 2>(com);
+- case Cmd::Maniac_GetBattleInfo:
+- return CmdSetup<&Game_Interpreter_Battle::CommandManiacGetBattleInfo, 5>(com);
+ default:
+ return Game_Interpreter::ExecuteCommand(com);
+	}
+@@ -782,266 +774,6 @@ bool Game_Interpreter_Battle::ProcessManiacSubEvents() {
+ return false;
+}
+
+--- src\game_strings.cpp ---
+@@ -162,12 +162,14 @@ int Game_Strings::Split(Str_Params params, const std::string& delimiter, int str
+ params.string_id++;
+ components++;
+		}
+-	} else {
++	}
++ else {
+ components = 1;
+
+ if (str.find(delimiter) == std::string::npos) {
+ // token not found
+-		} else {
++		}
++ else {
+ // This works for UTF-8
+ std::string token;
+ for (auto index = str.find(delimiter); index != std::string::npos; index = str.find(delimiter)) {
+@@ -177,7 +179,6 @@ int Game_Strings::Split(Str_Params params, const std::string& delimiter, int str
+ components++;
+ str.erase(0, index + delimiter.length());
+			}
+- splits++;
+		}
+	}
+
+
+--- src\maniac_patch.cpp ---
+@@ -526,15 +526,6 @@ int Process(std::vector<int32_t>::iterator& it, std::vector<int32_t>::iterator e
+					}
+ return 0;
+			}
+- case Op::AssignInplace:
+-
+- Output::Debug("EasyRPG : WIP command (v[Z] = v[X]=YYY )");
+- ++it;
+- imm = process(it, end, ip);
+- imm2 = process(it, end, ip);
+- Main_Data::game_variables->Set(imm, imm2);
+- return Main_Data::game_variables->Get(imm);
+-
+ default:
+ Output::Warning("Maniac: Expression contains unsupported operation {}", static_cast<int>(op));
+ return 0;
+</diff>
+</commit>
+================================================================================
+
+
+
+/*end of file .\beloved_bad_commits.txt*/
+
 /*start of file .\algo.cpp*/
 
 /* ... license chunk ... */
